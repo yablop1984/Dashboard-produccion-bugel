@@ -5,18 +5,36 @@ import pandas as pd
 st.set_page_config(page_title="Dashboard Producción", layout="wide")
 st.title("📊 Dashboard Producción Bugel")
 
-# --- Carga y preprocesamiento ---
+# --- Carga de datos ---
 url = (
     "https://docs.google.com/spreadsheets/"
     "d/1YtUaTmcVQR7N9FvXb5mYmvrUKkOnufwQV9HoF9Gf75I/"
     "export?format=csv&gid=0"
 )
 df = pd.read_csv(url)
-df['fecha_inicio_dt'] = pd.to_datetime(df['fecha_inicio'], errors='coerce')
-df['fecha_fin_dt']    = pd.to_datetime(df['fecha_fin'],    errors='coerce')
-df['tiempo_minutos']  = (df['fecha_fin_dt'] - df['fecha_inicio_dt']).dt.total_seconds() / 60
 
-# --- Define las pestañas ---
+# --- Función para normalizar fechas ---
+def normalizar_fecha(col):
+    col = col.astype(str).str.strip()
+    col = col.str.replace('.', ':', regex=False)  # Reemplaza puntos por dos puntos en horas
+    return pd.to_datetime(col, errors='coerce', dayfirst=True, infer_datetime_format=True)
+
+# Aplicar normalización
+df['fecha_inicio_dt'] = normalizar_fecha(df['fecha_inicio'])
+df['fecha_fin_dt'] = normalizar_fecha(df['fecha_fin'])
+
+# Diagnóstico: cuántas fechas válidas quedaron
+valid_inicio = df['fecha_inicio_dt'].notna().sum()
+valid_fin = df['fecha_fin_dt'].notna().sum()
+st.caption(f"✔ Fechas inicio válidas: {valid_inicio}/{len(df)}, Fechas fin válidas: {valid_fin}/{len(df)}")
+
+# Eliminar filas sin fecha de inicio válida
+df = df.dropna(subset=['fecha_inicio_dt'])
+
+# Calcular tiempo en minutos
+df['tiempo_minutos'] = (df['fecha_fin_dt'] - df['fecha_inicio_dt']).dt.total_seconds() / 60
+
+# --- Define pestañas ---
 tab1, tab2 = st.tabs(["📈 Vista General", "🔍 Análisis por Empleado"])
 
 # --- PESTAÑA 1: Vista General ---
@@ -39,33 +57,46 @@ with tab1:
 # --- PESTAÑA 2: Análisis por Empleado ---
 with tab2:
     st.sidebar.header("🔍 Filtros Detallados")
+
+    # Filtros dinámicos
     sel_empleados = st.sidebar.multiselect(
-        "Empleado", options=df['nombre'].unique(), default=df['nombre'].unique()
+        "Empleado", options=sorted(df['nombre'].dropna().unique()), default=list(df['nombre'].dropna().unique())
     )
     df_emp = df[df['nombre'].isin(sel_empleados)]
 
     sel_proyectos = st.sidebar.multiselect(
-        "Proyecto", options=df_emp['proyecto'].unique(), default=df_emp['proyecto'].unique()
+        "Proyecto", options=sorted(df_emp['proyecto'].dropna().unique()), default=list(df_emp['proyecto'].dropna().unique())
     )
     df_proj = df_emp[df_emp['proyecto'].isin(sel_proyectos)]
 
     sel_maquinas = st.sidebar.multiselect(
-        "Máquina", options=df_proj['maquina'].dropna().unique(), default=df_proj['maquina'].dropna().unique()
-    )
-    sel_procesos = st.sidebar.multiselect(
-        "Proceso", options=df_proj['proceso'].dropna().unique(), default=df_proj['proceso'].dropna().unique()
+        "Máquina", options=sorted(df_proj['maquina'].dropna().unique()), default=list(df_proj['maquina'].dropna().unique())
     )
 
+    sel_procesos = st.sidebar.multiselect(
+        "Proceso", options=sorted(df_proj['proceso'].dropna().unique()), default=list(df_proj['proceso'].dropna().unique())
+    )
+
+    # Rango de fechas
     fecha_min = df['fecha_inicio_dt'].min().date()
     fecha_max = df['fecha_inicio_dt'].max().date()
     rango_fechas = st.sidebar.date_input("Rango de fechas", [fecha_min, fecha_max])
 
+    if len(rango_fechas) == 2:
+        start_date, end_date = rango_fechas
+    else:
+        start_date, end_date = fecha_min, fecha_max
+
+    # Filtrado final
     df_filtrado = df_proj[
         (df_proj['maquina'].isin(sel_maquinas)) &
         (df_proj['proceso'].isin(sel_procesos)) &
-        (df_proj['fecha_inicio_dt'].dt.date >= rango_fechas[0]) &
-        (df_proj['fecha_inicio_dt'].dt.date <= rango_fechas[1])
+        (df_proj['fecha_inicio_dt'].dt.date >= start_date) &
+        (df_proj['fecha_inicio_dt'].dt.date <= end_date)
     ]
+
+    # Mostrar conteo filtrado
+    st.write(f"✅ Total registros filtrados: **{len(df_filtrado)}**")
 
     st.subheader("👷‍♂️ Piezas por Empleado")
     if not df_filtrado.empty:
@@ -79,8 +110,8 @@ with tab2:
                 "mark": "point",
                 "encoding": {
                     "x": {"field": "tiempo_minutos", "type": "quantitative", "title": "Tiempo (min)"},
-                    "y": {"field": "piezas",          "type": "quantitative", "title": "Piezas"},
-                    "color": {"field": "proyecto",   "type": "nominal"}
+                    "y": {"field": "piezas", "type": "quantitative", "title": "Piezas"},
+                    "color": {"field": "proyecto", "type": "nominal"}
                 }
             },
             use_container_width=True
@@ -89,11 +120,13 @@ with tab2:
     st.subheader("📄 Detalle de registros")
     st.dataframe(df_filtrado)
 
+    # Botón para descargar CSV filtrado
     st.download_button(
         "⬇️ Descargar datos filtrados (CSV)",
         data=df_filtrado.to_csv(index=False).encode('utf-8'),
         file_name='registros_filtrados.csv',
         mime='text/csv'
     )
+
 
 
