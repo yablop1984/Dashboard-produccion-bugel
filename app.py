@@ -13,31 +13,48 @@ url = (
 )
 df = pd.read_csv(url)
 
-# --- Función para limpiar y convertir fechas ---
-def parse_fecha_formato_especifico(serie):
+# --- Función robusta para limpiar y convertir fechas ---
+def limpiar_y_convertir_fecha(serie):
+    # Convertir todo a texto y limpiar
     serie = serie.astype(str).str.strip()
-    serie = serie.str.replace(',', '', regex=False)  # elimina la coma entre fecha y hora
-    return pd.to_datetime(serie, errors='coerce', dayfirst=True)
+    
+    # Reemplazar coma por espacio
+    serie = serie.str.replace(',', ' ', regex=False)
+    
+    # Eliminar espacios extra
+    serie = serie.str.replace(r'\s+', ' ', regex=True)
+    
+    # Primer intento: formato latino
+    fechas = pd.to_datetime(serie, errors='coerce', dayfirst=True, infer_datetime_format=True)
+    
+    # Segundo intento: por si algunas están en otro orden
+    mask_nat = fechas.isna()
+    if mask_nat.any():
+        fechas[mask_nat] = pd.to_datetime(serie[mask_nat], errors='coerce', dayfirst=False, infer_datetime_format=True)
+    
+    return fechas
 
-# Aplicamos la función a las columnas de fecha
-df['fecha_inicio_dt'] = parse_fecha_formato_especifico(df['fecha_inicio'])
-df['fecha_fin_dt'] = parse_fecha_formato_especifico(df['fecha_fin'])
+# --- Aplicar normalización a columnas ---
+df['fecha_inicio_dt'] = limpiar_y_convertir_fecha(df['fecha_inicio'])
+df['fecha_fin_dt'] = limpiar_y_convertir_fecha(df['fecha_fin'])
 
-# Diagnóstico: cuántas fechas son válidas
+# --- Diagnóstico de fechas ---
 valid_inicio = df['fecha_inicio_dt'].notna().sum()
 valid_fin = df['fecha_fin_dt'].notna().sum()
 st.caption(f"✔ Fechas inicio válidas: {valid_inicio}/{len(df)}, Fechas fin válidas: {valid_fin}/{len(df)}")
 
-# Eliminamos filas sin fecha válida
+# --- Filtrar registros sin fecha válida ---
 df = df.dropna(subset=['fecha_inicio_dt'])
 
-# Calculamos el tiempo en minutos
+# --- Calcular duración ---
 df['tiempo_minutos'] = (df['fecha_fin_dt'] - df['fecha_inicio_dt']).dt.total_seconds() / 60
 
-# --- Define pestañas ---
+# --- Pestañas ---
 tab1, tab2, tab3 = st.tabs(["📈 Vista General", "🔍 Análisis por Empleado", "📤 Exportar Datos"])
 
-# --- PESTAÑA 1: Vista General ---
+# ------------------------------
+# PESTAÑA 1: Vista General
+# ------------------------------
 with tab1:
     st.subheader("🔢 Indicadores Globales")
     col1, col2, col3 = st.columns(3)
@@ -54,7 +71,9 @@ with tab1:
     df_dia['fecha'] = df_dia['fecha_inicio_dt'].dt.date
     st.line_chart(df_dia.groupby('fecha')['piezas'].sum())
 
-# --- PESTAÑA 2: Análisis por Empleado ---
+# ------------------------------
+# PESTAÑA 2: Análisis por Empleado
+# ------------------------------
 with tab2:
     st.sidebar.header("🔍 Filtros Detallados")
 
@@ -95,7 +114,6 @@ with tab2:
         (df_proj['fecha_inicio_dt'].dt.date <= end_date)
     ]
 
-    # Mostrar conteo filtrado
     st.write(f"✅ Total registros filtrados: **{len(df_filtrado)}**")
 
     # Gráfico: Piezas por Empleado
@@ -103,10 +121,17 @@ with tab2:
     if not df_filtrado.empty:
         st.bar_chart(df_filtrado.groupby('nombre')['piezas'].sum())
 
-    # NUEVO: Gráfico Piezas por Proyecto filtrado
+    # Gráfico: Piezas por Proyecto filtrado
     st.subheader("📊 Piezas por Proyecto (Filtrado)")
     if not df_filtrado.empty:
         st.bar_chart(df_filtrado.groupby('proyecto')['piezas'].sum())
+
+    # Gráfico adicional: Evolución por Empleado
+    st.subheader("📈 Evolución por Empleado (Filtrado)")
+    if not df_filtrado.empty:
+        df_line = df_filtrado.copy()
+        df_line['fecha'] = df_line['fecha_inicio_dt'].dt.date
+        st.line_chart(df_line.groupby(['fecha', 'nombre'])['piezas'].sum().unstack().fillna(0))
 
     # Dispersión Tiempo vs Piezas
     st.subheader("🗺️ Dispersión Tiempo vs Piezas")
@@ -136,7 +161,9 @@ with tab2:
         mime='text/csv'
     )
 
-# --- PESTAÑA 3: Exportar Datos ---
+# ------------------------------
+# PESTAÑA 3: Exportar Datos
+# ------------------------------
 with tab3:
     st.subheader("📤 Descargar Dataset Completo")
     st.write(f"📦 Total registros en el dataset: **{len(df)}**")
