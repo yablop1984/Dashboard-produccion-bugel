@@ -52,6 +52,7 @@ with tab2:
     sel_maquinas = st.sidebar.multiselect(
         "Máquina", options=df_proj['maquina'].dropna().unique(), default=df_proj['maquina'].dropna().unique()
     )
+    
     sel_procesos = st.sidebar.multiselect(
         "Proceso", options=df_proj['proceso'].dropna().unique(), default=df_proj['proceso'].dropna().unique()
     )
@@ -67,6 +68,15 @@ with tab2:
         (df_proj['fecha_inicio_dt'].dt.date <= rango_fechas[1])
     ]
 
+    # Métricas por empleado
+    st.subheader("📊 Métricas por Empleado")
+    count_registros = len(df_filtrado)
+    last_date = df_filtrado['fecha_inicio_dt'].max().date() if count_registros > 0 else None
+    mcol1, mcol2 = st.columns(2)
+    mcol1.metric("📋 Número de registros", count_registros)
+    mcol2.metric("🗓️ Última fecha registrada", last_date)
+
+    # Gráficos
     st.subheader("👷‍♂️ Piezas por Empleado")
     if not df_filtrado.empty:
         st.bar_chart(df_filtrado.groupby('nombre')['piezas'].sum())
