@@ -13,29 +13,29 @@ url = (
 )
 df = pd.read_csv(url)
 
-# --- Función para normalizar fechas ---
-def normalizar_fecha(col):
-    col = col.astype(str).str.strip()
-    col = col.str.replace('.', ':', regex=False)  # Reemplaza puntos por dos puntos en horas
-    return pd.to_datetime(col, errors='coerce', dayfirst=True, infer_datetime_format=True)
+# --- Función para limpiar y convertir fechas ---
+def parse_fecha_formato_especifico(serie):
+    serie = serie.astype(str).str.strip()
+    serie = serie.str.replace(',', '', regex=False)  # elimina la coma entre fecha y hora
+    return pd.to_datetime(serie, errors='coerce', dayfirst=True)
 
-# Aplicar normalización
-df['fecha_inicio_dt'] = normalizar_fecha(df['fecha_inicio'])
-df['fecha_fin_dt'] = normalizar_fecha(df['fecha_fin'])
+# Aplicamos la función a las columnas de fecha
+df['fecha_inicio_dt'] = parse_fecha_formato_especifico(df['fecha_inicio'])
+df['fecha_fin_dt'] = parse_fecha_formato_especifico(df['fecha_fin'])
 
-# Diagnóstico: cuántas fechas válidas quedaron
+# Diagnóstico: cuántas fechas son válidas
 valid_inicio = df['fecha_inicio_dt'].notna().sum()
 valid_fin = df['fecha_fin_dt'].notna().sum()
 st.caption(f"✔ Fechas inicio válidas: {valid_inicio}/{len(df)}, Fechas fin válidas: {valid_fin}/{len(df)}")
 
-# Eliminar filas sin fecha de inicio válida
+# Eliminamos filas sin fecha válida
 df = df.dropna(subset=['fecha_inicio_dt'])
 
-# Calcular tiempo en minutos
+# Calculamos el tiempo en minutos
 df['tiempo_minutos'] = (df['fecha_fin_dt'] - df['fecha_inicio_dt']).dt.total_seconds() / 60
 
 # --- Define pestañas ---
-tab1, tab2 = st.tabs(["📈 Vista General", "🔍 Análisis por Empleado"])
+tab1, tab2, tab3 = st.tabs(["📈 Vista General", "🔍 Análisis por Empleado", "📤 Exportar Datos"])
 
 # --- PESTAÑA 1: Vista General ---
 with tab1:
@@ -98,10 +98,17 @@ with tab2:
     # Mostrar conteo filtrado
     st.write(f"✅ Total registros filtrados: **{len(df_filtrado)}**")
 
+    # Gráfico: Piezas por Empleado
     st.subheader("👷‍♂️ Piezas por Empleado")
     if not df_filtrado.empty:
         st.bar_chart(df_filtrado.groupby('nombre')['piezas'].sum())
 
+    # NUEVO: Gráfico Piezas por Proyecto filtrado
+    st.subheader("📊 Piezas por Proyecto (Filtrado)")
+    if not df_filtrado.empty:
+        st.bar_chart(df_filtrado.groupby('proyecto')['piezas'].sum())
+
+    # Dispersión Tiempo vs Piezas
     st.subheader("🗺️ Dispersión Tiempo vs Piezas")
     if not df_filtrado.empty:
         st.vega_lite_chart(
@@ -117,6 +124,7 @@ with tab2:
             use_container_width=True
         )
 
+    # Tabla detalle
     st.subheader("📄 Detalle de registros")
     st.dataframe(df_filtrado)
 
@@ -128,5 +136,13 @@ with tab2:
         mime='text/csv'
     )
 
-
-
+# --- PESTAÑA 3: Exportar Datos ---
+with tab3:
+    st.subheader("📤 Descargar Dataset Completo")
+    st.write(f"📦 Total registros en el dataset: **{len(df)}**")
+    st.download_button(
+        "⬇️ Descargar dataset completo (CSV)",
+        data=df.to_csv(index=False).encode('utf-8'),
+        file_name='produccion_completo.csv',
+        mime='text/csv'
+    )
