@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import Ridge
+from pandas.tseries.offsets import MonthEnd
 
 # ===============================
 # Configuración e información
 # ===============================
 st.set_page_config(page_title="Dashboard Producción", layout="wide")
-st.title("📊 Dashboard Producción Bugel")
+st.title("📊 Dashboard Producción")
 
 # Enlace público (ajústalo si cambia tu URL)
 PUBLIC_URL = "https://yablop1984-dashboard-produccion-bugel-app-2nqz7v.streamlit.app/"
@@ -31,7 +32,7 @@ except Exception:
 with st.expander("📱 Cómo instalar la app en el celular"):
     st.markdown(
         """
-**Android (Chrome):** abre la URL → menú **⋮** → **Añadir a pantalla de inicio** → **Instalar**.  
+**Android (Chrome):** abrir la URL → menú **⋮** → **Añadir a pantalla de inicio** → **Instalar**.  
 **iPhone/iPad (Safari):** abre la URL → botón **Compartir** → **Añadir a pantalla de inicio**.  
 > Crea un acceso directo (no APK).
         """
@@ -282,7 +283,7 @@ with tab5:
         # Mes de referencia = mes de la última fecha disponible
         fecha_max = df['fecha_inicio_dt'].max()
         if pd.isna(fecha_max):
-            st.info("No hay fechas válidas en el dataset.")
+            st.info("No hay fechas válidas en los datos.")
         else:
             mes_ref = fecha_max.to_period("M")
             df_mes = df[df['fecha_inicio_dt'].dt.to_period("M") == mes_ref].copy()
@@ -479,7 +480,8 @@ with tab5:
                 year = today.year
                 months = [pd.Period(f"{year}-{m:02d}") for m in range(today.month, 13)]
                 month_labels = [p.strftime("%b %Y") for p in months]
-                month_ends = [p.asfreq('M').to_timestamp().date() for p in months]
+                # CORREGIDO: último día real de cada mes
+                month_ends = [p.end_time.date() for p in months]
 
                 if modo_hz == "N días":
                     n_dias = st.number_input("N días de pronóstico", 1, 120, 14)
@@ -489,7 +491,7 @@ with tab5:
                         sel_label = st.select_slider("Mes objetivo", options=month_labels, value=month_labels[0])
                         fecha_fin_objetivo = month_ends[month_labels.index(sel_label)]
                     else:
-                        fecha_fin_objetivo = today.to_period('M').asfreq('M').to_timestamp().date()
+                        fecha_fin_objetivo = (today + MonthEnd(0)).date()
                 else:
                     fecha_fin_objetivo = None  # fin de mes del último dato
 
@@ -530,9 +532,10 @@ with tab5:
                     # Horizonte
                     last_date = s.index.max()
                     if modo_hz == "Hasta fin de mes":
-                        end_of_month = last_date.to_period('M').asfreq('M').to_timestamp()
-                        horizon = max((end_of_month.date() - last_date.date()).days, 0)
-                        fecha_fin_forecast = end_of_month.date()
+                        # CORREGIDO: último día del mes del último dato real
+                        end_of_month_date = (last_date + MonthEnd(0)).date()
+                        horizon = max((end_of_month_date - last_date.date()).days, 0)
+                        fecha_fin_forecast = end_of_month_date
                     elif modo_hz == "N días":
                         horizon = int(n_dias)
                         fecha_fin_forecast = (last_date + pd.Timedelta(days=horizon)).date()
