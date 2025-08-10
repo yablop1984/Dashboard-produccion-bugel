@@ -248,21 +248,7 @@ with tab4:
             )
             st.caption("Consejo Ronald: si prefiere Pareto por proyecto, cambie el agrupamiento a 'proyecto' en lugar de 'nombre'.")
 
-        # --- Gráfico estadístico: Boxplot de tiempos por proceso
-        st.subheader("📦 Distribución de tiempos por proceso (boxplot)")
-        if not df_last.empty:
-            st.vega_lite_chart(
-                {
-                    "data": {"values": df_last[['proceso','min_trabajo']].dropna().to_dict(orient="records")},
-                    "mark": {"type": "boxplot"},
-                    "encoding": {
-                        "x": {"field": "proceso", "type": "nominal", "title": "Proceso"},
-                        "y": {"field": "min_trabajo", "type": "quantitative", "title": "Minutos de trabajo"}
-                    }
-                },
-                use_container_width=True
-            )
-
+       
         # --- Tabla detalle del día y descarga
         st.subheader("📄 Detalle del último día")
         st.dataframe(df_last, use_container_width=True)
