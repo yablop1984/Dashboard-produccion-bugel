@@ -50,7 +50,7 @@ df = df.dropna(subset=['fecha_inicio_dt'])
 df['tiempo_minutos'] = (df['fecha_fin_dt'] - df['fecha_inicio_dt']).dt.total_seconds() / 60
 
 # --- Pestañas ---
-tab1, tab2, tab3 = st.tabs(["📈 Vista General", "🔍 Análisis por Empleado", "📤 Exportar Datos"])
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Vista General", "🔍 Análisis por Empleado", "📤 Exportar Datos", "🕒 Último día"])
 
 # ------------------------------
 # PESTAÑA 1: Vista General
@@ -173,3 +173,102 @@ with tab3:
         file_name='produccion_completo.csv',
         mime='text/csv'
     )
+# ------------------------------
+# PESTAÑA 4: Trabajo del último día ingresado
+# ------------------------------
+with tab4:
+    st.subheader("🕒 Trabajo del último día ingresado")
+
+    # Fecha más reciente (por fecha_inicio_dt)
+    ultima_fecha = df['fecha_inicio_dt'].dt.date.max()
+    if pd.isna(ultima_fecha):
+        st.info("No hay fechas válidas en el dataset.")
+    else:
+        st.caption(f"Última fecha detectada en los datos: **{ultima_fecha}**")
+
+        # Filtrar registros del último día
+        df_last = df[df['fecha_inicio_dt'].dt.date.eq(ultima_fecha)].copy()
+
+        # Asegurar columna de tiempo en minutos
+        if 'minutos_ajustados' in df_last.columns:
+            df_last['min_trabajo'] = df_last['minutos_ajustados'].fillna(0)
+        else:
+            df_last['min_trabajo'] = df_last['tiempo_minutos'].fillna(0)
+
+        # --- KPIs ---
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("📋 Registros", int(len(df_last)))
+        col2.metric("👷 Empleados", int(df_last['nombre'].nunique()))
+        col3.metric("🏗️ Proyectos", int(df_last['proyecto'].nunique()))
+        col4.metric("🧩 Piezas", int(df_last['piezas'].fillna(0).sum()))
+        col5.metric("⏱️ Tiempo (horas)", round(df_last['min_trabajo'].sum()/60, 2))
+
+        # --- Tabla por empleado (piezas y minutos)
+        st.subheader("👷 Trabajo por empleado (último día)")
+        tabla_emp = (
+            df_last.groupby('nombre', as_index=False)
+                   .agg(piezas=('piezas','sum'),
+                        minutos=('min_trabajo','sum'),
+                        proyectos_distintos=('proyecto','nunique'))
+                   .sort_values(['piezas','minutos'], ascending=False)
+        )
+        st.dataframe(tabla_emp, use_container_width=True)
+
+        # --- Pareto (piezas por empleado del último día)
+        st.subheader("📈 Pareto de piezas por empleado (último día)")
+        if not tabla_emp.empty:
+            pareto = tabla_emp[['nombre','piezas']].sort_values('piezas', ascending=False).reset_index(drop=True)
+            pareto['acum'] = pareto['piezas'].cumsum()
+            total = pareto['piezas'].sum()
+            pareto['acum_pct'] = (pareto['acum'] / total * 100).round(2) if total > 0 else 0
+
+            st.vega_lite_chart(
+                {
+                    "data": {"values": pareto.to_dict(orient="records")},
+                    "layer": [
+                        {   # Barras (piezas)
+                            "mark": {"type": "bar"},
+                            "encoding": {
+                                "x": {"field": "nombre", "type": "nominal", "sort": None, "title": "Empleado"},
+                                "y": {"field": "piezas", "type": "quantitative", "title": "Piezas"}
+                            }
+                        },
+                        {   # Línea acumulada (%)
+                            "mark": {"type": "line", "point": True},
+                            "encoding": {
+                                "x": {"field": "nombre", "type": "nominal", "sort": None},
+                                "y": {"field": "acum_pct", "type": "quantitative", "title": "Acumulado %", "axis": {"grid": False}},
+                                "color": {"value": "black"}
+                            }
+                        }
+                    ],
+                    "resolve": {"scale": {"y": "independent"}},
+                },
+                use_container_width=True
+            )
+            st.caption("Consejo: si prefieres Pareto por proyecto, cambia el agrupamiento a 'proyecto' en lugar de 'nombre'.")
+
+        # --- Gráfico estadístico: Boxplot de tiempos por proceso
+        st.subheader("📦 Distribución de tiempos por proceso (boxplot)")
+        if not df_last.empty:
+            st.vega_lite_chart(
+                {
+                    "data": {"values": df_last[['proceso','min_trabajo']].dropna().to_dict(orient="records")},
+                    "mark": {"type": "boxplot"},
+                    "encoding": {
+                        "x": {"field": "proceso", "type": "nominal", "title": "Proceso"},
+                        "y": {"field": "min_trabajo", "type": "quantitative", "title": "Minutos de trabajo"}
+                    }
+                },
+                use_container_width=True
+            )
+
+        # --- Tabla detalle del día y descarga
+        st.subheader("📄 Detalle del último día")
+        st.dataframe(df_last, use_container_width=True)
+        st.download_button(
+            "⬇️ Descargar registros del último día (CSV)",
+            data=df_last.to_csv(index=False).encode('utf-8'),
+            file_name=f"registros_{ultima_fecha}.csv",
+            mime="text/csv"
+        )
