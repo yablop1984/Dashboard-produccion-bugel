@@ -8,14 +8,12 @@ from pandas.tseries.offsets import MonthEnd
 # Configuración e información
 # ===============================
 st.set_page_config(page_title="Dashboard Producción", layout="wide")
-st.title("📊 Dashboard Producción")
+st.title("📊 Dashboard Producción Bugel")
 
-# Enlace público (ajústalo si cambia tu URL)
 PUBLIC_URL = "https://yablop1984-dashboard-produccion-bugel-app-2nqz7v.streamlit.app/"
 
 col_top_a, col_top_b = st.columns([1, 2])
 with col_top_a:
-    # Algunas versiones antiguas de Streamlit no tienen link_button
     try:
         st.link_button("🔗 Abrir versión pública", PUBLIC_URL)
     except Exception:
@@ -29,12 +27,12 @@ try:
 except Exception:
     st.sidebar.markdown(f"[🔗 Abrir versión pública]({PUBLIC_URL})")
 
-with st.expander("📱 Cómo instalar la app en el celular"):
+with st.expander("📱 Cómo instalar la app en tu celular"):
     st.markdown(
         """
-**Android (Chrome):** abrir la URL → menú **⋮** → **Añadir a pantalla de inicio** → **Instalar**.  
+**Android (Chrome):** abre la URL → menú **⋮** → **Añadir a pantalla de inicio** → **Instalar**.  
 **iPhone/iPad (Safari):** abre la URL → botón **Compartir** → **Añadir a pantalla de inicio**.  
-> Crea un acceso directo (no APK).
+> Crea un acceso directo (no APK). El uso offline total no está garantizado.
         """
     )
 
@@ -59,15 +57,35 @@ def limpiar_y_convertir_fecha(serie: pd.Series) -> pd.Series:
     return fechas
 
 df['fecha_inicio_dt'] = limpiar_y_convertir_fecha(df['fecha_inicio'])
-df['fecha_fin_dt'] = limpiar_y_convertir_fecha(df['fecha_fin'])
+df['fecha_fin_dt']    = limpiar_y_convertir_fecha(df['fecha_fin'])
 
 valid_inicio = df['fecha_inicio_dt'].notna().sum()
-valid_fin = df['fecha_fin_dt'].notna().sum()
+valid_fin    = df['fecha_fin_dt'].notna().sum()
 st.caption(f"✔ Fechas inicio válidas: {valid_inicio}/{len(df)}, Fechas fin válidas: {valid_fin}/{len(df)}")
 
 # Filtrado mínimo y duración
 df = df.dropna(subset=['fecha_inicio_dt']).copy()
 df['tiempo_minutos'] = (df['fecha_fin_dt'] - df['fecha_inicio_dt']).dt.total_seconds() / 60
+
+# Asegurar numérico
+df['piezas'] = pd.to_numeric(df['piezas'], errors='coerce').fillna(0)
+
+# ===============================
+# Helpers (días laborales L–S)
+# ===============================
+def dias_lunes_a_sabado(start_date: pd.Timestamp | pd.DateOffset | pd.Timestamp, end_date: pd.Timestamp | pd.DateOffset | pd.Timestamp) -> int:
+    """Cuenta cuantos días entre start_date y end_date (incluyendo ambos) son lunes..sábado (weekday 0..5)."""
+    rng = pd.date_range(pd.to_datetime(start_date).date(), pd.to_datetime(end_date).date(), freq="D")
+    if len(rng) == 0:
+        return 0
+    return int(np.sum(rng.weekday <= 5))  # 0..5 -> L..S
+
+def filtrar_ls_por_fecha_col(df_in: pd.DataFrame, fecha_col: str = 'fecha_inicio_dt') -> pd.DataFrame:
+    """Devuelve df filtrado a días L–S (lunes a sábado) según la columna de fecha indicada."""
+    d = df_in.copy()
+    d['__dow'] = d[fecha_col].dt.weekday
+    d = d[d['__dow'] <= 5].drop(columns='__dow')
+    return d
 
 # ===============================
 # Pestañas
@@ -86,9 +104,9 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.subheader("🔢 Indicadores Globales")
     c1, c2, c3 = st.columns(3)
-    c1.metric("🧩 Total piezas", int(pd.to_numeric(df['piezas'], errors='coerce').fillna(0).sum()))
+    c1.metric("🧩 Total piezas", int(df['piezas'].sum()))
     c2.metric("📋 Total registros", len(df))
-    prom_global = pd.to_numeric(df['piezas'], errors='coerce').fillna(0).mean() if not df.empty else 0
+    prom_global = df['piezas'].mean() if not df.empty else 0
     c3.metric("📊 Promedio pzas/registro", round(prom_global, 2))
 
     st.subheader("🏗️ Piezas por Proyecto")
@@ -208,11 +226,7 @@ with tab4:
         st.caption(f"Última fecha detectada en los datos: **{ultima_fecha}**")
 
         df_last = df[df['fecha_inicio_dt'].dt.date.eq(ultima_fecha)].copy()
-
-        if 'minutos_ajustados' in df_last.columns:
-            df_last['min_trabajo'] = df_last['minutos_ajustados'].fillna(0)
-        else:
-            df_last['min_trabajo'] = df_last['tiempo_minutos'].fillna(0)
+        df_last['min_trabajo'] = df_last.get('minutos_ajustados', df_last['tiempo_minutos']).fillna(0)
 
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("📋 Registros", int(len(df_last)))
@@ -221,44 +235,44 @@ with tab4:
         c4.metric("🧩 Piezas", int(df_last['piezas'].fillna(0).sum()))
         c5.metric("⏱️ Tiempo (horas)", round(df_last['min_trabajo'].sum()/60, 2))
 
-        st.subheader("👷 Trabajo por empleado (último día)")
-        tabla_emp = (
-            df_last.groupby('nombre', as_index=False)
-                   .agg(piezas=('piezas','sum'),
-                        minutos=('min_trabajo','sum'),
-                        proyectos_distintos=('proyecto','nunique'))
-                   .sort_values(['piezas','minutos'], ascending=False)
+        # --- Pareto (piezas del último día) con selector
+        st.subheader("📈 Pareto de piezas (último día)")
+        dim = st.radio("Dimensión", ["Empleado", "Proyecto", "Proceso", "Máquina"], horizontal=True, index=0)
+        key_map = {"Empleado": ("nombre", "Empleado"),
+                   "Proyecto": ("proyecto", "Proyecto"),
+                   "Proceso":  ("proceso",  "Proceso"),
+                   "Máquina":  ("maquina",  "Máquina")}
+        key_col, key_title = key_map[dim]
+
+        pareto_base = (df_last.groupby(key_col, as_index=False)
+                               .agg(piezas=("piezas", "sum"))
+                               .rename(columns={key_col: "clave"})
+                               .sort_values("piezas", ascending=False)
+                               .reset_index(drop=True))
+        total = pareto_base["piezas"].sum()
+        pareto_base["acum"] = pareto_base["piezas"].cumsum()
+        pareto_base["acum_pct"] = (pareto_base["acum"]/total*100).round(2) if total>0 else 0
+
+        st.vega_lite_chart(
+            {
+                "data": {"values": pareto_base.to_dict(orient="records")},
+                "layer": [
+                    {"mark": {"type": "bar"},
+                     "encoding": {
+                         "x": {"field": "clave", "type": "nominal", "sort": None, "title": key_title},
+                         "y": {"field": "piezas", "type": "quantitative", "title": "Piezas"}
+                     }},
+                    {"mark": {"type": "line", "point": True},
+                     "encoding": {
+                         "x": {"field": "clave", "type": "nominal", "sort": None},
+                         "y": {"field": "acum_pct", "type": "quantitative", "title": "Acumulado %", "axis": {"grid": False}},
+                         "color": {"value": "black"}
+                     }}
+                ],
+                "resolve": {"scale": {"y": "independent"}}
+            },
+            use_container_width=True
         )
-        st.dataframe(tabla_emp, use_container_width=True)
-
-        st.subheader("📈 Pareto de piezas por empleado (último día)")
-        if not tabla_emp.empty:
-            pareto = tabla_emp[['nombre','piezas']].sort_values('piezas', ascending=False).reset_index(drop=True)
-            pareto['acum'] = pareto['piezas'].cumsum()
-            total = pareto['piezas'].sum()
-            pareto['acum_pct'] = (pareto['acum'] / total * 100).round(2) if total > 0 else 0
-
-            st.vega_lite_chart(
-                {
-                    "data": {"values": pareto.to_dict(orient="records")},
-                    "layer": [
-                        {"mark": {"type": "bar"},
-                         "encoding": {
-                             "x": {"field": "nombre", "type": "nominal", "sort": None, "title": "Empleado"},
-                             "y": {"field": "piezas", "type": "quantitative", "title": "Piezas"}
-                         }},
-                        {"mark": {"type": "line", "point": True},
-                         "encoding": {
-                             "x": {"field": "nombre", "type": "nominal", "sort": None},
-                             "y": {"field": "acum_pct", "type": "quantitative", "title": "Acumulado %", "axis": {"grid": False}},
-                             "color": {"value": "black"}
-                         }}
-                    ],
-                    "resolve": {"scale": {"y": "independent"}},
-                },
-                use_container_width=True
-            )
-            st.caption("Consejo: si prefiere Pareto por proyecto, cambie el agrupamiento a 'proyecto'.")
 
         st.subheader("📄 Detalle del último día")
         st.dataframe(df_last, use_container_width=True)
@@ -270,38 +284,47 @@ with tab4:
         )
 
 # ------------------------------
-# PESTAÑA 5: ML / Proyecciones (unificada)
+# PESTAÑA 5: ML / Proyecciones (unificada) — **solo L–S**
 # ------------------------------
 with tab5:
-    st.subheader("🤖 Análisis y Proyección mensual por empleado")
+    st.subheader("🤖 Análisis y Proyección mensual por empleado (L–S)")
 
     # Columna de minutos a usar
     min_col = 'minutos_ajustados' if 'minutos_ajustados' in df.columns else 'tiempo_minutos'
     if min_col not in df.columns:
         st.warning("No encuentro columnas de minutos ('minutos_ajustados' o 'tiempo_minutos').")
     else:
-        # Mes de referencia = mes de la última fecha disponible
         fecha_max = df['fecha_inicio_dt'].max()
         if pd.isna(fecha_max):
             st.info("No hay fechas válidas en los datos.")
         else:
             mes_ref = fecha_max.to_period("M")
+            # Ventana del mes
+            start_of_month = mes_ref.start_time.date()
+            end_of_month   = mes_ref.end_time.date()
+
+            # Por defecto = días L–S del mes
+            dias_ls_mes = dias_lunes_a_sabado(start_of_month, end_of_month)
+
+            # Filtrar solo registros del mes y L–S
             df_mes = df[df['fecha_inicio_dt'].dt.to_period("M") == mes_ref].copy()
             df_mes['fecha'] = df_mes['fecha_inicio_dt'].dt.date
+            df_mes_ls = filtrar_ls_por_fecha_col(df_mes, 'fecha_inicio_dt')
 
-            # Parámetro: días laborados objetivo (26 por defecto)
-            dias_obj = st.number_input("Días laborados objetivo para la proyección", min_value=1, max_value=31, value=26)
-
-            # ---------- Agregación EMPLEADOS ----------
-            agg = (
-                df_mes.groupby('nombre', as_index=False)
-                      .agg(
-                          piezas_actual=('piezas','sum'),
-                          minutos_actual=(min_col,'sum'),
-                          dias_trabajados=('fecha','nunique'),
-                          proyectos=('proyecto','nunique')
-                      )
+            # Parámetro: días laborados objetivo (por defecto: L–S del mes)
+            dias_obj = st.number_input(
+                "Días laborados objetivo para la proyección (L–S)",
+                min_value=1, max_value=31, value=int(dias_ls_mes)
             )
+
+            # ---------- Agregación EMPLEADOS (solo L–S) ----------
+            agg = (df_mes_ls.groupby('nombre', as_index=False)
+                            .agg(
+                                piezas_actual=('piezas','sum'),
+                                minutos_actual=(min_col,'sum'),
+                                dias_trabajados=('fecha','nunique'),
+                                proyectos=('proyecto','nunique')
+                            ))
             agg['min_dia_prom'] = np.where(agg['dias_trabajados']>0, agg['minutos_actual']/agg['dias_trabajados'], 0)
             agg['piezas_por_min'] = np.where(agg['minutos_actual']>0, agg['piezas_actual']/agg['minutos_actual'], 0)
             agg['dias_restantes'] = (dias_obj - agg['dias_trabajados']).clip(lower=0)
@@ -311,9 +334,9 @@ with tab5:
 
             # KPIs
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("👷 Empleados (mes)", int(agg['nombre'].nunique()))
-            k2.metric("🧩 Piezas actuales (mes)", int(agg['piezas_actual'].sum()))
-            k3.metric("⏱️ Minutos actuales (mes)", int(agg['minutos_actual'].sum()))
+            k1.metric("👷 Empleados (mes L–S)", int(agg['nombre'].nunique()))
+            k2.metric("🧩 Piezas actuales (L–S)", int(agg['piezas_actual'].sum()))
+            k3.metric("⏱️ Minutos actuales (L–S)", int(agg['minutos_actual'].sum()))
             k4.metric("📅 Mes analizado", str(mes_ref))
 
             # Helpers de ranking 1..10
@@ -325,7 +348,7 @@ with tab5:
                 st.caption(titulo)
                 st.dataframe(t, use_container_width=True)
 
-            st.markdown("### ⏱️ Empleados con **más y menos** minutos (mes en curso)")
+            st.markdown("### ⏱️ Empleados con **más y menos** minutos (mes L–S)")
             ca, cb = st.columns(2)
             with ca:
                 rank_top(
@@ -340,7 +363,7 @@ with tab5:
                     titulo="Bottom 10 por **minutos**"
                 )
 
-            st.markdown("### 🧩 Empleados con **más y menos** piezas (mes en curso)")
+            st.markdown("### 🧩 Empleados con **más y menos** piezas (mes L–S)")
             cc, cd = st.columns(2)
             with cc:
                 rank_top(
@@ -355,8 +378,8 @@ with tab5:
                     titulo="Bottom 10 por **piezas**"
                 )
 
-            # ---------- Pareto con toggle de Fuente y Dimensión ----------
-            st.markdown("### 📈 Pareto (elige Fuente y Dimensión)")
+            # ---------- Pareto mensual con selector de dimensión (solo L–S) ----------
+            st.markdown("### 📈 Pareto mensual (L–S): elige Fuente y Dimensión")
             p1, p2 = st.columns(2)
             with p1:
                 fuente_pareto = st.radio("Fuente", ["Actual", "Proyectado"], horizontal=True, index=1)
@@ -368,13 +391,13 @@ with tab5:
                        "Proceso":  ("proceso",  "Proceso")}
             key_col, key_title = dim_map[dim_pareto]
 
-            daily_dim = (df_mes.groupby([key_col, 'fecha'], as_index=False)
-                              .agg(piezas=('piezas','sum'),
-                                   minutos=(min_col,'sum')))
+            daily_dim = (df_mes_ls.groupby([key_col, 'fecha'], as_index=False)
+                                   .agg(piezas=('piezas','sum'),
+                                        minutos=(min_col,'sum')))
             agg_dim = (daily_dim.groupby(key_col, as_index=False)
-                               .agg(dias_trabajados=('fecha','nunique'),
-                                    piezas_actual=('piezas','sum'),
-                                    minutos_actual=('minutos','sum')))
+                                 .agg(dias_trabajados=('fecha','nunique'),
+                                      piezas_actual=('piezas','sum'),
+                                      minutos_actual=('minutos','sum')))
             agg_dim['min_dia_prom'] = np.where(agg_dim['dias_trabajados']>0, agg_dim['minutos_actual']/agg_dim['dias_trabajados'], 0)
             agg_dim['piezas_por_min'] = np.where(agg_dim['minutos_actual']>0, agg_dim['piezas_actual']/agg_dim['minutos_actual'], 0)
             agg_dim['dias_restantes'] = (dias_obj - agg_dim['dias_trabajados']).clip(lower=0)
@@ -383,10 +406,10 @@ with tab5:
 
             if fuente_pareto == "Actual":
                 pareto_df = agg_dim[[key_col, 'piezas_actual']].rename(columns={'piezas_actual': 'valor'})
-                y_title = f"Piezas (mes actual) por {key_title}"
+                y_title = f"Piezas (mes actual L–S) por {key_title}"
             else:
                 pareto_df = agg_dim[[key_col, 'piezas_proyectadas_mes']].rename(columns={'piezas_proyectadas_mes': 'valor'})
-                y_title = f"Piezas (proyectadas) por {key_title}"
+                y_title = f"Piezas (proyectadas L–S) por {key_title}"
 
             pareto_df = pareto_df.sort_values('valor', ascending=False).reset_index(drop=True)
             total_val = pareto_df['valor'].sum()
@@ -417,11 +440,11 @@ with tab5:
             st.download_button(
                 "⬇️ Descargar Pareto mostrado (CSV)",
                 data=pareto_df.rename(columns={key_col: key_title}).to_csv(index=False).encode('utf-8'),
-                file_name=f"pareto_{fuente_pareto.lower()}_{key_col}.csv",
+                file_name=f"pareto_{fuente_pareto.lower()}_{key_col}_LS.csv",
                 mime="text/csv"
             )
 
-            st.markdown("### 📄 Resumen por empleado (mes y proyección)")
+            st.markdown("### 📄 Resumen por empleado (mes L–S y proyección)")
             cols_show = [
                 'nombre','proyectos','dias_trabajados',
                 'minutos_actual','min_dia_prom','minutos_proyectados_mes',
@@ -432,41 +455,32 @@ with tab5:
             st.download_button(
                 "⬇️ Descargar resumen (CSV)",
                 data=resumen.to_csv(index=False).encode('utf-8'),
-                file_name=f"resumen_proyecciones_{mes_ref}.csv",
+                file_name=f"resumen_proyecciones_{mes_ref}_LS.csv",
                 mime="text/csv"
             )
 
             st.caption(
-                "Metodología: Proyección con meta de **26 días laborados**. "
+                "Metodología (L–S): proyección con meta de **días laborados** definidos arriba. "
                 "Minutos futuros = promedio minutos/día × días faltantes; "
                 "Piezas futuras = tasa (piezas/min) × minutos futuros."
             )
 
             # ----------------------------------------------------------
-            # 🔮 PRONÓSTICO DIARIO (minutos + piezas) — con selector mensual
+            # 🔮 PRONÓSTICO DIARIO (minutos como predictor)
             # ----------------------------------------------------------
             st.markdown("---")
             st.subheader("🔮 Pronóstico diario (con minutos como predictor)")
 
             df_ml = df.copy()
-            df_ml['piezas'] = pd.to_numeric(df_ml['piezas'], errors='coerce').fillna(0)
-            df_ml[min_col] = pd.to_numeric(df_ml[min_col], errors='coerce').fillna(0)
-            df_ml['fecha'] = df_ml['fecha_inicio_dt'].dt.date
+            df_ml['piezas']   = pd.to_numeric(df_ml['piezas'], errors='coerce').fillna(0)
+            df_ml[min_col]    = pd.to_numeric(df_ml[min_col], errors='coerce').fillna(0)
+            df_ml['fecha']    = df_ml['fecha_inicio_dt'].dt.date
 
-            # --- NIVEL DEL PRONÓSTICO (incluye Proyecto) ---
             nivel = st.selectbox(
                 "Nivel de pronóstico",
-                ["Empleado", "Proyecto", "Proceso", "Máquina"],
-                index=0
+                ["Empleado", "Proyecto", "Proceso", "Máquina"], index=0
             )
-
-            col_key = {
-                "Empleado": "nombre",
-                "Proyecto": "proyecto",
-                "Proceso":  "proceso",
-                "Máquina":  "maquina",
-            }[nivel]
-
+            col_key = {"Empleado": "nombre", "Proyecto": "proyecto", "Proceso": "proceso", "Máquina": "maquina"}[nivel]
             keys = sorted(df_ml[col_key].dropna().unique().tolist())
 
             if not keys:
@@ -475,13 +489,12 @@ with tab5:
                 sel_key = st.selectbox(nivel, keys)
                 modo_hz = st.radio("Horizonte", ["Hasta fin de mes", "N días", "Hasta mes objetivo"], horizontal=True, index=0)
 
-                # Meses desde el mes actual hasta diciembre del año en curso
+                # Meses desde el mes actual hasta diciembre
                 today = pd.Timestamp.today()
                 year = today.year
                 months = [pd.Period(f"{year}-{m:02d}") for m in range(today.month, 13)]
                 month_labels = [p.strftime("%b %Y") for p in months]
-                # CORREGIDO: último día real de cada mes
-                month_ends = [p.end_time.date() for p in months]
+                month_ends   = [p.end_time.date() for p in months]  # último día real
 
                 if modo_hz == "N días":
                     n_dias = st.number_input("N días de pronóstico", 1, 120, 14)
@@ -495,7 +508,7 @@ with tab5:
                 else:
                     fecha_fin_objetivo = None  # fin de mes del último dato
 
-                # Serie diaria agregada por la clave seleccionada
+                # Serie diaria por clave seleccionada
                 serie = (df_ml[df_ml[col_key] == sel_key]
                             .groupby('fecha', as_index=False)
                             .agg(piezas=('piezas', 'sum'),
@@ -508,18 +521,18 @@ with tab5:
                     s = serie.set_index(pd.to_datetime(serie['fecha']))
                     s['lag1'] = s['piezas'].shift(1).fillna(0)
                     s['lag7'] = s['piezas'].shift(7).fillna(0)
-                    s['dow'] = s.index.dayofweek
-                    s['min'] = s['minutos']
+                    s['dow']  = s.index.dayofweek
+                    s['min']  = s['minutos']
                     s['min_lag1'] = s['minutos'].shift(1).fillna(s['minutos'].mean())
-                    s['pzs_ma7'] = s['piezas'].rolling(7, min_periods=1).mean()
+                    s['pzs_ma7']  = s['piezas'].rolling(7, min_periods=1).mean()
 
-                    test_days = min(7, max(1, len(s) // 5))
+                    test_days = min(7, max(1, len(s)//5))
                     train = s.iloc[:-test_days] if len(s) > test_days else s
-                    test = s.iloc[-test_days:] if len(s) > test_days else s.iloc[0:0]
+                    test  = s.iloc[-test_days:] if len(s) > test_days else s.iloc[0:0]
 
-                    Xtr = train[['lag1', 'lag7', 'dow', 'min', 'min_lag1', 'pzs_ma7']]
+                    Xtr = train[['lag1','lag7','dow','min','min_lag1','pzs_ma7']]
                     ytr = train['piezas']
-                    Xte = test[['lag1', 'lag7', 'dow', 'min', 'min_lag1', 'pzs_ma7']]
+                    Xte = test[['lag1','lag7','dow','min','min_lag1','pzs_ma7']]
                     yte = test['piezas']
 
                     model = Ridge(alpha=1.0, random_state=42)
@@ -529,17 +542,16 @@ with tab5:
                         mae = float(np.mean(np.abs(pred_te - yte)))
                         st.metric("MAE (últimos días)", round(mae, 2))
 
-                    # Horizonte
+                    # Horizonte y fechas
                     last_date = s.index.max()
                     if modo_hz == "Hasta fin de mes":
-                        # CORREGIDO: último día del mes del último dato real
-                        end_of_month_date = (last_date + MonthEnd(0)).date()
+                        end_of_month_date = (last_date + MonthEnd(0)).date()  # último día real del mes
                         horizon = max((end_of_month_date - last_date.date()).days, 0)
                         fecha_fin_forecast = end_of_month_date
                     elif modo_hz == "N días":
                         horizon = int(n_dias)
                         fecha_fin_forecast = (last_date + pd.Timedelta(days=horizon)).date()
-                    else:  # Hasta mes objetivo
+                    else:
                         fecha_fin_forecast = fecha_fin_objetivo
                         horizon = max((pd.Timestamp(fecha_fin_forecast) - last_date).days, 0)
 
@@ -552,7 +564,7 @@ with tab5:
                         st.info("No hay días por proyectar para esta selección en el horizonte elegido.")
                         st.vega_lite_chart(
                             {
-                                "data": {"values": serie[['fecha', 'piezas']].assign(tipo='real').to_dict(orient="records")},
+                                "data": {"values": serie[['fecha','piezas']].assign(tipo='real').to_dict(orient="records")},
                                 "mark": "line",
                                 "encoding": {
                                     "x": {"field": "fecha", "type": "temporal", "title": "Fecha"},
@@ -563,13 +575,13 @@ with tab5:
                             use_container_width=True
                         )
                     else:
-                        # Minutos futuros supuestos = promedio últimos 7 días (fallback al global/1.0)
+                        # Minutos futuros supuestos: promedio últimos 7 días (o global si no hay)
                         min_prom = s['minutos'].tail(7).mean()
                         if not np.isfinite(min_prom) or min_prom == 0:
                             min_prom = max(1.0, s['minutos'].mean())
 
                         # Forecast iterativo
-                        hist = s[['piezas', 'lag1', 'lag7', 'dow', 'min', 'min_lag1', 'pzs_ma7']].copy()
+                        hist = s[['piezas','lag1','lag7','dow','min','min_lag1','pzs_ma7']].copy()
                         preds = []
                         cur = last_date
                         for _ in range(horizon):
@@ -579,7 +591,7 @@ with tab5:
                             lag7 = hist.iloc[-7]['piezas'] if len(hist) >= 7 else 0
                             min_today = float(min_prom)
                             min_lag1 = hist.iloc[-1]['min']
-                            pzs_ma7 = hist['piezas'].tail(7).mean()
+                            pzs_ma7  = hist['piezas'].tail(7).mean()
 
                             x = np.array([[lag1, lag7, dow, min_today, min_lag1, pzs_ma7]])
                             yhat = max(0.0, float(model.predict(x)))
@@ -587,15 +599,14 @@ with tab5:
 
                             hist.loc[cur] = [
                                 yhat, yhat, lag7, dow, min_today, min_today,
-                                (pzs_ma7 * 6 + yhat) / 7 if len(hist) >= 6 else yhat
+                                (pzs_ma7*6 + yhat)/7 if len(hist)>=6 else yhat
                             ]
 
                         df_pred = pd.DataFrame(preds)
 
-                        # Gráfico
                         chart_df = pd.concat([
-                            serie[['fecha', 'piezas']].assign(tipo='real'),
-                            df_pred.rename(columns={'piezas_pred': 'piezas'}).assign(tipo='forecast')
+                            serie[['fecha','piezas']].assign(tipo='real'),
+                            df_pred.rename(columns={'piezas_pred':'piezas'}).assign(tipo='forecast')
                         ], ignore_index=True)
 
                         st.vega_lite_chart(
@@ -611,7 +622,6 @@ with tab5:
                             use_container_width=True
                         )
 
-                        # Totales del horizonte y resumen mensual del forecast
                         tot_min_pred = int(df_pred['minutos_supuestos'].sum()) if not df_pred.empty else 0
                         tot_pzs_pred = int(df_pred['piezas_pred'].sum()) if not df_pred.empty else 0
                         m1, m2 = st.columns(2)
@@ -621,8 +631,8 @@ with tab5:
                         df_pred['fecha'] = pd.to_datetime(df_pred['fecha'])
                         df_pred['mes'] = df_pred['fecha'].dt.to_period('M')
                         resumen_mes = (df_pred.groupby('mes', as_index=False)
-                                                .agg(minutos=('minutos_supuestos', 'sum'),
-                                                     piezas=('piezas_pred', 'sum')))
+                                                .agg(minutos=('minutos_supuestos','sum'),
+                                                     piezas=('piezas_pred','sum')))
                         st.subheader("📅 Resumen por mes (solo forecast)")
                         st.dataframe(resumen_mes, use_container_width=True)
 
