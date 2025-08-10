@@ -49,9 +49,15 @@ df = df.dropna(subset=['fecha_inicio_dt'])
 # --- Calcular duración ---
 df['tiempo_minutos'] = (df['fecha_fin_dt'] - df['fecha_inicio_dt']).dt.total_seconds() / 60
 
-# --- Pestañas ---
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Vista General", "🔍 Análisis por Empleado", "📤 Exportar Datos", "🕒 Último día"])
 
+# --- Pestañas ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📈 Vista General", 
+    "🔍 Análisis por Empleado", 
+    "📤 Exportar Datos", 
+    "🕒 Último día",
+    "🤖 ML / Proyecciones"
+])
 # ------------------------------
 # PESTAÑA 1: Vista General
 # ------------------------------
@@ -258,3 +264,137 @@ with tab4:
             file_name=f"registros_{ultima_fecha}.csv",
             mime="text/csv"
         )
+
+# ------------------------------
+# PESTAÑA 5: ML / Proyecciones
+# ------------------------------
+with tab5:
+    st.subheader("🤖 Análisis y Proyección mensual por empleado")
+
+    # Columna de minutos a usar
+    min_col = 'minutos_ajustados' if 'minutos_ajustados' in df.columns else 'tiempo_minutos'
+    if min_col not in df.columns:
+        st.warning("No encuentro columnas de minutos ('minutos_ajustados' o 'tiempo_minutos').")
+    else:
+        # Mes de referencia = mes de la última fecha disponible
+        fecha_max = df['fecha_inicio_dt'].max()
+        if pd.isna(fecha_max):
+            st.info("No hay fechas válidas en el dataset.")
+        else:
+            mes_ref = fecha_max.to_period("M")
+            df_mes = df[df['fecha_inicio_dt'].dt.to_period("M") == mes_ref].copy()
+            df_mes['fecha'] = df_mes['fecha_inicio_dt'].dt.date
+
+            # Parámetro: días laborados objetivo (26 por defecto)
+            dias_obj = st.number_input("Días laborados objetivo para la proyección", min_value=1, max_value=31, value=26)
+
+            # Agregación por empleado (mes en curso)
+            agg = (
+                df_mes.groupby('nombre', as_index=False)
+                      .agg(
+                          piezas_actual=('piezas','sum'),
+                          minutos_actual=(min_col,'sum'),
+                          dias_trabajados=('fecha','nunique'),
+                          proyectos=('proyecto','nunique')
+                      )
+            )
+
+            # Cálculos derivados
+            agg['min_dia_prom'] = agg.apply(
+                lambda r: r['minutos_actual'] / r['dias_trabajados'] if r['dias_trabajados'] > 0 else 0, axis=1
+            )
+            agg['piezas_por_min'] = agg.apply(
+                lambda r: (r['piezas_actual'] / r['minutos_actual']) if r['minutos_actual'] > 0 else 0, axis=1
+            )
+            agg['dias_restantes'] = (dias_obj - agg['dias_trabajados']).clip(lower=0)
+            agg['min_futuros'] = agg['min_dia_prom'] * agg['dias_restantes']
+
+            # Proyecciones a fin de mes (26 días por defecto)
+            agg['piezas_proyectadas_mes'] = agg['piezas_actual'] + agg['piezas_por_min'] * agg['min_futuros']
+            agg['minutos_proyectados_mes'] = agg['minutos_actual'] + agg['min_futuros']
+
+            # KPIs
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("👷 Empleados (mes)", int(agg['nombre'].nunique()))
+            c2.metric("🧩 Piezas actuales (mes)", int(agg['piezas_actual'].sum()))
+            c3.metric("⏱️ Minutos actuales (mes)", int(agg['minutos_actual'].sum()))
+            c4.metric("📅 Mes analizado", str(mes_ref))
+
+            # --- TOP / BOTTOM por minutos (mes actual)
+            st.markdown("### ⏱️ Empleados con **más y menos** minutos (mes en curso)")
+            colA, colB = st.columns(2)
+            top_min = agg.sort_values('minutos_actual', ascending=False).head(10)
+            bottom_min = agg.sort_values('minutos_actual', ascending=True).head(10)
+            with colA:
+                st.caption("Top 10 por **minutos**")
+                st.dataframe(top_min[['nombre','minutos_actual','dias_trabajados','min_dia_prom']], use_container_width=True)
+            with colB:
+                st.caption("Bottom 10 por **minutos**")
+                st.dataframe(bottom_min[['nombre','minutos_actual','dias_trabajados','min_dia_prom']], use_container_width=True)
+
+            # --- TOP / BOTTOM por piezas (mes actual)
+            st.markdown("### 🧩 Empleados con **más y menos** piezas (mes en curso)")
+            colC, colD = st.columns(2)
+            top_pzs = agg.sort_values('piezas_actual', ascending=False).head(10)
+            bottom_pzs = agg.sort_values('piezas_actual', ascending=True).head(10)
+            with colC:
+                st.caption("Top 10 por **piezas**")
+                st.dataframe(top_pzs[['nombre','piezas_actual','piezas_por_min','proyectos']], use_container_width=True)
+            with colD:
+                st.caption("Bottom 10 por **piezas**")
+                st.dataframe(bottom_pzs[['nombre','piezas_actual','piezas_por_min','proyectos']], use_container_width=True)
+
+            # --- Pareto de piezas proyectadas a fin de mes
+            st.markdown("### 📈 Pareto de **piezas proyectadas** (a fin de mes)")
+            pareto = agg[['nombre','piezas_proyectadas_mes']].sort_values('piezas_proyectadas_mes', ascending=False).reset_index(drop=True)
+            total_p = pareto['piezas_proyectadas_mes'].sum()
+            pareto['acum'] = pareto['piezas_proyectadas_mes'].cumsum()
+            pareto['acum_pct'] = (pareto['acum'] / total_p * 100).round(2) if total_p > 0 else 0
+
+            st.vega_lite_chart(
+                {
+                    "data": {"values": pareto.to_dict(orient="records")},
+                    "layer": [
+                        {   # Barras
+                            "mark": {"type": "bar"},
+                            "encoding": {
+                                "x": {"field": "nombre", "type": "nominal", "sort": None, "title": "Empleado"},
+                                "y": {"field": "piezas_proyectadas_mes", "type": "quantitative", "title": "Piezas (proy. mes)"}
+                            }
+                        },
+                        {   # Línea % acumulado
+                            "mark": {"type": "line", "point": True},
+                            "encoding": {
+                                "x": {"field": "nombre", "type": "nominal", "sort": None},
+                                "y": {"field": "acum_pct", "type": "quantitative", "title": "Acumulado %", "axis": {"grid": False}},
+                                "color": {"value": "black"}
+                            }
+                        }
+                    ],
+                    "resolve": {"scale": {"y": "independent"}}
+                },
+                use_container_width=True
+            )
+
+            # --- Tabla resumen con análisis y proyección
+            st.markdown("### 📄 Resumen por empleado (mes en curso y proyección)")
+            cols_show = [
+                'nombre','proyectos','dias_trabajados',
+                'minutos_actual','min_dia_prom','minutos_proyectados_mes',
+                'piezas_actual','piezas_por_min','piezas_proyectadas_mes'
+            ]
+            resumen = agg[cols_show].sort_values('piezas_proyectadas_mes', ascending=False)
+            st.dataframe(resumen, use_container_width=True)
+
+            st.download_button(
+                "⬇️ Descargar resumen (CSV)",
+                data=resumen.to_csv(index=False).encode('utf-8'),
+                file_name=f"resumen_ml_proyecciones_{mes_ref}.csv",
+                mime="text/csv"
+            )
+
+            st.caption(
+                "Metodología: Proyectamos con **26 días laborados**. "
+                "Estimamos minutos futuros = promedio de minutos/día × días restantes; "
+                "y piezas futuras = tasa (piezas/min) × minutos futuros."
+            )
