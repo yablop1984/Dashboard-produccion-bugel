@@ -452,8 +452,16 @@ with tab5:
             df_ml[min_col] = pd.to_numeric(df_ml[min_col], errors='coerce').fillna(0)
             df_ml['fecha'] = df_ml['fecha_inicio_dt'].dt.date
 
-            nivel = st.selectbox("Nivel de pronóstico", ["Empleado", "Proceso", "Máquina"], index=0)
-            col_key = {"Empleado": "nombre", "Proceso": "proceso", "Máquina": "maquina"}[nivel]
+            # Ahora incluye Proyecto
+nivel = st.selectbox("Nivel de pronóstico", ["Empleado", "Proyecto", "Proceso", "Máquina"], index=0)
+
+# Mapeo de la columna clave según el nivel elegido
+col_key = {
+    "Empleado": "nombre",
+    "Proyecto": "proyecto",
+    "Proceso":  "proceso",
+    "Máquina":  "maquina",
+}[nivel]
             keys = sorted(df_ml[col_key].dropna().unique().tolist())
 
             if not keys:
