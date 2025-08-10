@@ -128,7 +128,7 @@ with tab2:
         (df_proj['fecha_inicio_dt'].dt.date <= end_date)
     ]
 
-    st.write(f"✅ Total registros filtrados: **{len[df_filtrado]}**")
+    st.write(f"✅ Total registros filtrados: **{len(df_filtrado)}**")
 
     st.subheader("👷‍♂️ Piezas por Empleado")
     if not df_filtrado.empty:
