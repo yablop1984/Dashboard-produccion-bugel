@@ -246,7 +246,7 @@ with tab4:
                 },
                 use_container_width=True
             )
-            st.caption("Consejo: si prefieres Pareto por proyecto, cambia el agrupamiento a 'proyecto' en lugar de 'nombre'.")
+            st.caption("Consejo Ronald: si prefiere Pareto por proyecto, cambie el agrupamiento a 'proyecto' en lugar de 'nombre'.")
 
         # --- Gráfico estadístico: Boxplot de tiempos por proceso
         st.subheader("📦 Distribución de tiempos por proceso (boxplot)")
