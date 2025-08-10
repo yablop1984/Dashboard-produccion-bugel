@@ -401,145 +401,139 @@ with tab5:
 
 
 # ==========================================================
-# B) Pronóstico diario (con minutos como predictor)
-#     y opción de nivel: Empleado / Proyecto / Proceso
+# 🔮 Pronóstico diario (con minutos como predictor)
+#     Empleado / Proyecto / Proceso  —  BLOQUE AUTOSUFICIENTE
 # ==========================================================
 st.markdown("### 🔮 Pronóstico diario (con minutos como predictor)")
 
-# --- Configuración ---
-nivel = st.selectbox("Nivel de pronóstico", ["Empleado", "Proyecto", "Proceso"])
-col_key = {"Empleado": "nombre", "Proyecto": "proyecto", "Proceso": "proceso"}[nivel]
+import numpy as np
+from sklearn.linear_model import Ridge
 
-# Lista de claves disponibles
+# --- Bootstrap de datos para este bloque ---
+# Columna de minutos disponible o la calculamos
+min_col = 'minutos_ajustados' if 'minutos_ajustados' in df.columns else (
+    'tiempo_minutos' if 'tiempo_minutos' in df.columns else None
+)
+if min_col is None:
+    if {'fecha_inicio_dt','fecha_fin_dt'}.issubset(df.columns):
+        df['tiempo_minutos'] = (df['fecha_fin_dt'] - df['fecha_inicio_dt']).dt.total_seconds()/60
+        min_col = 'tiempo_minutos'
+    else:
+        st.error("No encuentro minutos ni puedo calcularlos (faltan fecha_inicio_dt/fecha_fin_dt).")
+        st.stop()
+
+df_ml = df.copy()
+df_ml['piezas'] = pd.to_numeric(df_ml['piezas'], errors='coerce').fillna(0)
+df_ml[min_col] = pd.to_numeric(df_ml[min_col], errors='coerce').fillna(0)
+df_ml['fecha'] = df_ml['fecha_inicio_dt'].dt.date
+
+# --- Configuración de nivel ---
+nivel = st.selectbox("Nivel de pronóstico", ["Empleado", "Proyecto", "Proceso"])
+col_key = {"Empleado":"nombre", "Proyecto":"proyecto", "Proceso":"proceso"}[nivel]
+if col_key not in df_ml.columns:
+    st.error(f"Falta la columna '{col_key}' en los datos.")
+    st.stop()
+
 keys = sorted(df_ml[col_key].dropna().unique().tolist())
 if not keys:
     st.info(f"No hay datos para {nivel.lower()}.")
+    st.stop()
+
+sel_key = st.selectbox(nivel, keys)
+
+# Horizonte
+modo_hz = st.radio("Horizonte", ["Hasta fin de mes", "N días"], horizontal=True)
+n_dias = st.number_input("N días de pronóstico", 1, 60, 14) if modo_hz == "N días" else None
+
+# Serie diaria
+serie = (df_ml[df_ml[col_key] == sel_key]
+            .groupby('fecha', as_index=False)
+            .agg(piezas=('piezas','sum'),
+                 minutos=(min_col,'sum'))).sort_values('fecha')
+
+if serie.empty:
+    st.info("Sin datos para esa selección.")
+    st.stop()
+
+s = serie.set_index(pd.to_datetime(serie['fecha']))
+# Features
+s['lag1'] = s['piezas'].shift(1).fillna(0)
+s['lag7'] = s['piezas'].shift(7).fillna(0)
+s['dow']  = s.index.dayofweek
+s['min']      = s['minutos']
+s['min_lag1'] = s['minutos'].shift(1).fillna(s['minutos'].mean())
+s['pzs_ma7']  = s['piezas'].rolling(7, min_periods=1).mean()
+
+# Train/Test
+test_days = min(7, max(1, len(s)//5))
+train = s.iloc[:-test_days] if len(s) > test_days else s
+test  = s.iloc[-test_days:] if len(s) > test_days else s.iloc[0:0]
+
+Xtr = train[['lag1','lag7','dow','min','min_lag1','pzs_ma7']]
+ytr = train['piezas']
+Xte = test[['lag1','lag7','dow','min','min_lag1','pzs_ma7']]
+yte = test['piezas']
+
+model = Ridge(alpha=1.0, random_state=42)
+model.fit(Xtr, ytr)
+if len(Xte) > 0:
+    pred_te = model.predict(Xte)
+    mae = float(np.mean(np.abs(pred_te - yte)))
+    st.metric("MAE (últimos días)", round(mae, 2))
+
+# Horizonte a pronosticar
+last_date = s.index.max()
+if modo_hz == "Hasta fin de mes":
+    end_of_month = last_date.to_period('M').asfreq('M').to_timestamp()
+    horizon = max((end_of_month.date() - last_date.date()).days, 0)
 else:
-    sel_key = st.selectbox(nivel, keys)
+    horizon = int(n_dias)
 
-    # Horizonte: fin de mes o N días
-    modo_hz = st.radio("Horizonte", ["Hasta fin de mes", "N días"], horizontal=True)
-    n_dias = st.number_input("N días de pronóstico", min_value=1, max_value=60, value=14) if modo_hz == "N días" else None
+# Minutos futuros supuestos = promedio últimos 7 días (fallback al global)
+min_prom = s['minutos'].tail(7).mean()
+if not np.isfinite(min_prom) or min_prom == 0:
+    min_prom = max(1.0, s['minutos'].mean())
 
-    # Serie diaria agregada
-    serie = (df_ml[df_ml[col_key] == sel_key]
-                .groupby('fecha', as_index=False)
-                .agg(piezas=('piezas','sum'),
-                     minutos=(min_col,'sum')))
+# Forecast iterativo
+hist = s[['piezas','lag1','lag7','dow','min','min_lag1','pzs_ma7']].copy()
+preds = []
+cur = last_date
+for _ in range(horizon):
+    cur = cur + pd.Timedelta(days=1)
+    dow = cur.dayofweek
+    lag1 = hist.iloc[-1]['piezas']
+    lag7 = hist.iloc[-7]['piezas'] if len(hist) >= 7 else 0
+    min_today = min_prom
+    min_lag1 = hist.iloc[-1]['min']
+    pzs_ma7  = hist['piezas'].tail(7).mean()
 
-    if serie.empty:
-        st.info("Sin datos para esa selección.")
-    else:
-        # Orden y features
-        serie = serie.sort_values('fecha')
-        s = serie.set_index(pd.to_datetime(serie['fecha']))
-        # Lags y calendarios
-        s['lag1'] = s['piezas'].shift(1)
-        s['lag7'] = s['piezas'].shift(7)
-        s['dow']  = s.index.dayofweek  # 0=lun
-        # Minutos como predictor
-        s['min']      = s['minutos']
-        s['min_lag1'] = s['minutos'].shift(1)
-        # Promedio móvil (suaviza)
-        s['pzs_ma7']  = s['piezas'].rolling(7, min_periods=1).mean()
+    x = np.array([[lag1, lag7, dow, min_today, min_lag1, pzs_ma7]])
+    yhat = max(0.0, float(model.predict(x)))
+    preds.append({"fecha": cur.date(), "piezas_pred": yhat, "minutos_supuestos": min_today})
 
-        s = s.fillna(0)
+    hist.loc[cur] = [yhat, yhat, lag7, dow, min_today, min_today, (pzs_ma7*6 + yhat)/7 if len(hist)>=6 else yhat]
 
-        # Split: últimos 7 días para test si alcanza
-        test_days = min(7, max(1, len(s)//5))
-        train = s.iloc[:-test_days] if len(s) > test_days else s
-        test  = s.iloc[-test_days:] if len(s) > test_days else s.iloc[0:0]
+df_pred = pd.DataFrame(preds)
 
-        Xtr = train[['lag1','lag7','dow','min','min_lag1','pzs_ma7']]
-        ytr = train['piezas']
-        Xte = test[['lag1','lag7','dow','min','min_lag1','pzs_ma7']]
-        yte = test['piezas']
+# Gráfico
+chart_df = pd.concat([
+    serie[['fecha','piezas']].assign(tipo='real'),
+    df_pred.rename(columns={'piezas_pred':'piezas'}).assign(tipo='forecast')
+], ignore_index=True)
 
-        if Xtr.empty:
-            st.info("Se requieren más días históricos para entrenar el modelo.")
-        else:
-            from sklearn.linear_model import Ridge
-            import numpy as np
-            model = Ridge(alpha=1.0, random_state=42)
-            model.fit(Xtr, ytr)
+st.vega_lite_chart(
+    {
+        "data": {"values": chart_df.to_dict(orient="records")},
+        "mark": "line",
+        "encoding": {
+            "x": {"field": "fecha", "type": "temporal", "title": "Fecha"},
+            "y": {"field": "piezas", "type": "quantitative", "title": "Piezas"},
+            "color": {"field": "tipo", "type": "nominal"}
+        }
+    },
+    use_container_width=True
+)
 
-            # Evaluación simple
-            if len(Xte) > 0:
-                pred_te = model.predict(Xte)
-                mae = float(np.mean(np.abs(pred_te - yte)))
-                st.metric("MAE (últimos días)", round(mae, 2))
-            else:
-                st.caption("Sin bloque de prueba (muy pocos días).")
-
-            # Horizonte
-            last_date = s.index.max()
-            if modo_hz == "Hasta fin de mes":
-                end_of_month = last_date.to_period('M').asfreq('M').to_timestamp()
-                horizon = max((end_of_month.date() - last_date.date()).days, 0)
-            else:
-                horizon = int(n_dias)
-
-            # Minutos diarios futuros (promedio últimos 7, fallback a global)
-            min_prom = s['minutos'].tail(7).mean()
-            if not np.isfinite(min_prom) or min_prom == 0:
-                min_prom = max(1.0, s['minutos'].mean())
-
-            # Forecast iterativo día a día
-            hist = s[['piezas','lag1','lag7','dow','min','min_lag1','pzs_ma7']].copy()
-            preds = []
-            cur = last_date
-            for i in range(horizon):
-                cur = cur + pd.Timedelta(days=1)
-                dow = cur.dayofweek
-                lag1 = hist.iloc[-1]['piezas']
-                lag7 = hist.iloc[-7]['piezas'] if len(hist) >= 7 else 0
-                min_today = min_prom
-                min_lag1 = hist.iloc[-1]['min'] if len(hist) > 0 else min_prom
-                pzs_ma7 = (hist['piezas'].tail(7).mean() if len(hist) >= 1 else 0)
-
-                x = np.array([[lag1, lag7, dow, min_today, min_lag1, pzs_ma7]])
-                yhat = float(model.predict(x))
-                yhat = max(0, yhat)
-
-                preds.append({"fecha": cur.date(), "piezas_pred": yhat, "minutos_supuestos": min_today})
-
-                # Actualizar hist para el siguiente paso
-                new_row = {
-                    'piezas': yhat,
-                    'lag1': yhat,             # el próximo día usará este como lag1
-                    'lag7': lag7,             # se ajustará automáticamente con el shift lógico del loop
-                    'dow': dow,
-                    'min': min_today,
-                    'min_lag1': min_today,
-                    'pzs_ma7': (hist['pzs_ma7'].iloc[-1]*min(6, len(hist.tail(7))-1) + yhat) / min(7, len(hist.tail(7))+1)
-                }
-                hist.loc[cur] = new_row
-
-            df_pred = pd.DataFrame(preds)
-
-            # Gráfico línea (histórico + forecast)
-            chart_df = pd.concat([
-                serie[['fecha','piezas']].assign(tipo='real'),
-                df_pred.rename(columns={'piezas_pred':'piezas'}).assign(tipo='forecast')
-            ], ignore_index=True)
-
-            st.vega_lite_chart(
-                {
-                    "data": {"values": chart_df.to_dict(orient="records")},
-                    "mark": "line",
-                    "encoding": {
-                        "x": {"field": "fecha", "type": "temporal", "title": "Fecha"},
-                        "y": {"field": "piezas", "type": "quantitative", "title": "Piezas"},
-                        "color": {"field": "tipo", "type": "nominal"}
-                    }
-                },
-                use_container_width=True
-            )
-
-            # Totales y tabla
-            tot_hist = int(serie['piezas'].sum())
-            tot_pred = int(df_pred['piezas_pred'].sum()) if not df_pred.empty else 0
-            st.write(f"**Total histórico del mes (hasta {last_date.date()}):** {tot_hist} piezas")
-            st.write(f"**Pronóstico en horizonte seleccionado:** {tot_pred} piezas")
-
-            st.dataframe(df_pred, use_container_width=True)
+st.write(f"**Total histórico del mes (hasta {last_date.date()}):** {int(serie['piezas'].sum())} piezas")
+st.write(f"**Pronóstico en el horizonte seleccionado:** {int(df_pred['piezas_pred'].sum()) if not df_pred.empty else 0} piezas")
+st.dataframe(df_pred, use_container_width=True)
