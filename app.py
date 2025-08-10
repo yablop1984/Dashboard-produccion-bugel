@@ -7,7 +7,7 @@ from sklearn.linear_model import Ridge
 # Configuración e información
 # ===============================
 st.set_page_config(page_title="Dashboard Producción", layout="wide")
-st.title("📊 Dashboard Producción")
+st.title("📊 Dashboard Producción Bugel")
 
 # Enlace público (ajústalo si cambia tu URL)
 PUBLIC_URL = "https://yablop1984-dashboard-produccion-bugel-app-2nqz7v.streamlit.app/"
@@ -31,7 +31,7 @@ except Exception:
 with st.expander("📱 Cómo instalar la app en el celular"):
     st.markdown(
         """
-**Android (Chrome):** abrir la URL → menú **⋮** → **Añadir a pantalla de inicio** → **Instalar**.  
+**Android (Chrome):** abre la URL → menú **⋮** → **Añadir a pantalla de inicio** → **Instalar**.  
 **iPhone/iPad (Safari):** abre la URL → botón **Compartir** → **Añadir a pantalla de inicio**.  
 > Crea un acceso directo (no APK).
         """
@@ -452,16 +452,20 @@ with tab5:
             df_ml[min_col] = pd.to_numeric(df_ml[min_col], errors='coerce').fillna(0)
             df_ml['fecha'] = df_ml['fecha_inicio_dt'].dt.date
 
-            # Ahora incluye Proyecto
-nivel = st.selectbox("Nivel de pronóstico", ["Empleado", "Proyecto", "Proceso", "Máquina"], index=0)
+            # --- NIVEL DEL PRONÓSTICO (incluye Proyecto) ---
+            nivel = st.selectbox(
+                "Nivel de pronóstico",
+                ["Empleado", "Proyecto", "Proceso", "Máquina"],
+                index=0
+            )
 
-# Mapeo de la columna clave según el nivel elegido
-col_key = {
-    "Empleado": "nombre",
-    "Proyecto": "proyecto",
-    "Proceso":  "proceso",
-    "Máquina":  "maquina",
-}[nivel]
+            col_key = {
+                "Empleado": "nombre",
+                "Proyecto": "proyecto",
+                "Proceso":  "proceso",
+                "Máquina":  "maquina",
+            }[nivel]
+
             keys = sorted(df_ml[col_key].dropna().unique().tolist())
 
             if not keys:
@@ -487,9 +491,9 @@ col_key = {
                     else:
                         fecha_fin_objetivo = today.to_period('M').asfreq('M').to_timestamp().date()
                 else:
-                    fecha_fin_objetivo = None  # se calcula con end_of_month
+                    fecha_fin_objetivo = None  # fin de mes del último dato
 
-                # Serie diaria agregada
+                # Serie diaria agregada por la clave seleccionada
                 serie = (df_ml[df_ml[col_key] == sel_key]
                             .groupby('fecha', as_index=False)
                             .agg(piezas=('piezas', 'sum'),
